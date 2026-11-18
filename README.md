@@ -254,3 +254,7 @@ in `$APATHY_VERSION`.
 - `.github/release/`: release-please config, `bundle.zsh` and the `apathy.zsh` it builds.
 - `.github/demo/`: the shell for recording the demo (`make demo`).
 - `test/`: table-driven classifier and model cases, then end-to-end tests through zpty, tmux and the fake agents in `test/helpers.zsh`.
+
+## License
+
+[MIT](LICENSE)
