@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Superseded PR runs are cancelled; main runs finish, since they may release.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · ${{ matrix.agent }} · ${{ matrix.jq }} jq
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # zsh 5.8 (ubuntu-22.04) and 5.9 (the rest).
+        os: [ubuntu-22.04, ubuntu-24.04, macos-15, macos-26]
+        agent: [opencode, claude, codex]
+        # Without jq, OpenCode's plain output is used instead of the JSON renderer.
+        jq: [with, without]
+        exclude:
+          # macOS ships jq in /usr/bin, which can't be removed.
+          - os: macos-15
+            jq: without
+          - os: macos-26
+            jq: without
+    env:
+      LC_ALL: C.UTF-8
+      APATHY_BENCH_MAX_US: 500
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh tmux
+
+      - if: runner.os == 'macOS'
+        run: brew install tmux
+
+      - if: matrix.jq == 'with' && runner.os == 'Linux'
+        run: sudo apt-get install -y jq
+
+      - if: matrix.jq == 'without'
+        run: |
+          sudo apt-get remove -y jq || true
+          while path=$(command -v jq); do sudo rm -f "$path"; hash -r; done
+
+      - run: sudo chmod -R go-w /usr/share/zsh /usr/local/share/zsh 2>/dev/null || true
+
+      - run: |
+          zsh --version
+          tmux -V
+          command -v jq || echo "jq: not installed"
+
+      - run: make test AGENTS=${{ matrix.agent }}
+
+  # The plugins most likely to clash: both wrap zle widgets, and are sourced
+  # after apathy as the README says.
+  with-plugins:
+    name: ubuntu-24.04 · ${{ matrix.agent }} · autosuggestions + syntax-highlighting
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [opencode, claude, codex]
+    env:
+      LC_ALL: C.UTF-8
+      APATHY_BENCH_MAX_US: 500
+      APATHY_TEST_WITH: >-
+        ${{ github.workspace }}/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh
+        ${{ github.workspace }}/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zsh-users/zsh-autosuggestions
+          ref: e52ee8ca55bcc56a17c828767a3f98f22a68d4eb # v0.7.1
+          path: plugins/zsh-autosuggestions
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zsh-users/zsh-syntax-highlighting
+          ref: db085e4661f6aafd24e5acb5b2e17e4dd5dddf3e # 0.8.0
+          path: plugins/zsh-syntax-highlighting
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y zsh tmux jq
+      - run: sudo chmod -R go-w /usr/share/zsh /usr/local/share/zsh 2>/dev/null || true
+      - run: make test AGENTS=${{ matrix.agent }}
+
+  # Keeps a release PR open that bumps the version and changelog from
+  # conventional commits; merging it tags and publishes the release, with
+  # apathy.zsh attached.
+  release:
+    needs: [test, with-plugins]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: .github/release/config.json
+          manifest-file: .github/release/manifest.json
+
+      - if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/release/apathy.zsh?ref=$TAG" -H 'Accept: application/vnd.github.raw' > apathy.zsh
+          gh release upload "$TAG" apathy.zsh --clobber -R "$GITHUB_REPOSITORY"
