@@ -97,11 +97,24 @@ jobs:
       - run: sudo chmod -R go-w /usr/share/zsh /usr/local/share/zsh 2>/dev/null || true
       - run: make test AGENTS=${{ matrix.agent }}
 
+  # The one check branch protection requires, so matrix changes don't need
+  # its settings changed.
+  ci:
+    if: always()
+    needs: [test, with-plugins]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          [[ " $RESULTS " != *" failure "* && " $RESULTS " != *" cancelled "* ]]
+
   # Keeps a release PR open that bumps the version and changelog from
   # conventional commits; merging it tags and publishes the release, with
   # apathy.zsh attached.
   release:
-    needs: [test, with-plugins]
+    needs: ci
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
